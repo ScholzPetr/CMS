@@ -1,0 +1,258 @@
+<?php
+
+namespace App\AdminModule\Presenters;
+
+
+use Nette,
+    App\Model;
+use Nette\Application\UI\Form;
+use Nette\Application\BadRequestException;
+use Nette\Application\ForbiddenRequestException;
+
+/**
+ * Menu presenter.
+ */
+class MenuPresenter extends BasePresenter {
+
+    private $database;
+    private $record;
+
+    public function __construct(Nette\Database\Context $database) {
+        $this->database = $database;
+    }
+    public function renderDefault() {
+        //předání názvu tabulky
+        $this->template->menu = $this->database->table('menu');
+    }
+    /*
+     * Pomocná funkce overující existenci $id
+     */
+    protected function loadItem($id) {
+        $item = $this->database->table('menu')->get($id);
+        if (!$item) {
+            $this->flashMessage("Záznam $id neexistuje", 'error');
+            $this->redirect('default');
+        }
+        return $item;
+    }
+    /*
+     * Pomocná metoda -> Smazání položky
+     */
+    public function actionRemove($id) {
+        $values = $this->database->table('menu')->get($id); //nacteni dat
+        
+        //zálohování templates (predelat na rekurzivni voláni kvuli vice polozkam latte sablon)
+        $file = "../app/FrontModule/templates/".$values->name."/default.latte"; //beginner file
+        $newfile = "../app/backup/templates/".$values->name."/default.latte"; //destination file
+        $toFileUrl = "../app/backup/templates/";
+        $this->makeDir($toFileUrl,$values); //vytvoreni slozky zaloha kopirovani latte sablon
+        $valuesUrl = "templates/".$values->name;
+        $this->copyFile($file, $newfile, $valuesUrl);
+        
+        //zálohování presenters
+        $file = "../app/FrontModule/presenters/".$values->name."Presenter.php"; //beginner file
+        $newfile = "../app/backup/presenters/".$values->name."Presenter.php"; //destination file
+        $valuesUrl = "presenters/".$values->name;
+        $this->copyFile($file, $newfile, $valuesUrl);
+        
+        //vymazání položek
+        $fileUrl = "../app/FrontModule/templates/".$values->name."/default.latte";
+        $this->removeFile($fileUrl); // vymazání souboru
+        $fileUrl = "../app/FrontModule/templates/".$values->name;
+        $this->removeDir($fileUrl); //vymazání složky
+        $fileUrl = "../app/FrontModule/presenters/".$values->name."Presenter.php";
+        $this->removeFile($fileUrl); // vymazání souboru
+        $this->database->table('menu')->get($id)->delete();
+        $this->flashMessage('Položka byla smazána!', 'success');
+        $this->redirect('Menu:default'); //vrácení zpět
+    }
+    /*
+     * Pomocná metoda -> Editování položky
+     */
+    public function actionEdit($id) {
+        // načtení záznamu z databáze
+        $item = $this->loadItem($id);
+        $defaults = $this->database->table('menu')->get($id);
+        $this->record = $this->database->table('menu')->get($id);
+        $this['menuForm']->setDefaults($defaults); // nastavení výchozích hodnot
+//            if (!$this->record) { // kontrola existence záznamu
+//                throw new BadRequestException;
+//
+//            } elseif ($this->record->userId != $this->user->id) { // kontrola oprávnění
+//                throw new ForbiddenRequestException;
+//            }
+    }
+    /*
+     * Pomocná metoda -> Vytvoření formuláře
+     */
+    protected function createComponentMenuForm() {
+        $form = new Form;
+        $form->addText('name', 'Název:');
+        $form->addText('title', 'Titulek:');
+        $form->addCheckbox('visible', 'Zobrazit toto menu')->setDefaultValue(true);
+//        $form->addText('visible', 'Viditelnost:');
+        $form->addSubmit('send', 'Odeslat')->setAttribute("class", "btn");
+        $form->onSuccess[] = callback($this, 'processRecordForm');
+        return $form;
+    }
+    /*
+     * Formulář slouží k přidání a upravení záznamu
+     */
+    public function processRecordForm(Form $form) {
+        //kontrola existence záznamu
+        if ((int) $this->getParameter('id') && !$this->record) {
+            throw new BadRequestException;
+        }
+        //získání dat z formuláře
+        $values = $form->getValues();
+        $infoName = $this->database->table('menu')->get($this->getParameter('id'));
+        //upraveni zaznamu
+        if ($this->record) {
+            $this->database->table('menu')->get($this->record->id)->update($values);
+            //prejmenovani slozek a presenteru , latte se nemění zustava ve složce ve stejné
+            $this->callMethodFilesEdit($values, $infoName);
+            $this->flashMessage('Položka byla upravena!', 'success');
+            //návrat
+            $this->redirect('Menu:default');
+        } else {//přidání záznamu
+            //přidání složek a překopírování souboru k vytvoreni funkcniho tlacitka menu
+            $filename = "../app/FrontModule/templates/".$values->name."/";
+            if(!file_exists($filename)){
+                $this->callMethodFilesAdd($values);
+                $this->database->table('menu')->insert($values);
+                $this->flashMessage('Položka byla přidána!', 'success');
+            } else{
+                $menuName = $this->database->table('menu')->fetchAll();
+                $i=0;
+                foreach ($menuName as $menuItem){
+                    if($menuItem->name == $values->name){
+                        $i++;
+                    }
+                }
+                if($i==0){
+                     $this->callMethodFilesAdd($values);
+                     $this->database->table('menu')->insert($values);
+                     $this->flashMessage('Položka byla přidána!', 'success');
+                }else{
+                    $this->flashMessage('Položka nelze pridat, už položka existuje!', 'success');
+                }
+            } 
+            //návrat
+            $this->redirect('Menu:default');
+        }
+    }
+    /*
+     * Pomocná metoda slouží ke správnému editování položek
+     */
+    public function callMethodFilesEdit($values,$infoName){
+        //.....prejmenovani slozky
+        $filename = "../app/FrontModule/templates/".$infoName->name;
+        $filenamenew = "../app/FrontModule/templates/".$values->name;
+            if(file_exists($filename)){
+                rename($filename,$filenamenew );//volani funkce
+                //............prejmenovani presenteru
+                    $nameFileCopy = "Presenter.php";         
+                    $filename = "../app/FrontModule/presenters/" . $infoName->name.$nameFileCopy;
+                    $filenamenew = "../app/FrontModule/presenters/" . $values->name.$nameFileCopy;
+                        if(file_exists($filename)){
+                            rename($filename, $filenamenew);//volani funkce
+                        }
+                        
+                    }
+        }
+    /*
+     * Pomocná metoda slouží ke správnému vytvoreni položek
+     */
+    public function callMethodFilesAdd($values){
+        //Volání metody sloužící k automatickému vytvoření položky
+        $toFileUrl = "../app/FrontModule/templates/";
+        $this->makeDir($toFileUrl, $values);
+        //copy latte
+        $nameFileCopy = "default.latte";
+        $fileLatte = "../app/pattern/".$nameFileCopy;
+        $newfileLatte = "../app/FrontModule/templates/".$values->name."/".$nameFileCopy;
+        $valuesUrl = "presenters/".$values->name;
+        $this->copyFile($fileLatte,$newfileLatte, $valuesUrl);
+        //copy presenter
+        $nameFileCopy = "Presenter.php";
+        $filePhp = "../app/pattern/".$nameFileCopy;
+        $newfilePhp = "../app/FrontModule/presenters/".$values->name.$nameFileCopy;
+        $valuesUrl = "presenters/";
+        $this->copyFile($filePhp,$newfilePhp, $valuesUrl);
+        //naplnění presenteru
+        $nameFileCopy = $values->name."Presenter.php";
+        $phpFile = "../app/FrontModule/presenters/".$nameFileCopy;
+        $this->importFile($values,$phpFile);
+    }
+    /*
+     * Metoda slouží k automatickému vytvoření složky
+     */
+    public function makeDir($toFileUrl,$values){
+        $filename = $toFileUrl . $values->name;
+            if(!file_exists($filename)){
+                mkdir("$filename", 0777);
+            } 
+    }
+    /*
+     * Metoda slouží k automatickému kopírování složky, položky
+     */
+    public function copyFile($file,$newfile,$valuesUrl){
+        $filename = "../app/FrontModule/" . $valuesUrl ;
+            //ano slozka byla vytvorena tak muzeme kopirovat soubor
+            
+//            if(!file_exists($filename)){
+                if(!copy($file, $newfile))
+                        $this->flashMessage("Chyba kopirovani pattern souboru", 'error');
+//            }
+    }
+    /*
+     * Metoda slouží k importování souboru
+     */
+    public function importFile($values,$phpFile){
+        $strPresenters = 
+                
+"<?php ".
+
+"namespace App\Presenters;".
+
+"use Nette,App\Model;".
+"use Nette\Application\UI\Form;".
+
+
+"/**".
+" * $values->name"."Presenter.".
+" */".
+"class $values->name"."Presenter extends BasePresenter".
+"{".
+        "private $"."database;".
+        
+        "public function __construct(Nette\Database\Context $"."database) {".
+            "$"."this"."-".">"."database "."= "."$"."database;".
+        "}".
+    
+        "public function renderDefault()".
+	"{".
+            "$"."this"."-".">"."template"."-".">"."anyVariable = 'any value';".
+        "}}"
+        
+
+;
+            $handle = fopen($phpFile, 'a');
+            fwrite($handle, $strPresenters);
+            fclose($handle);
+        
+    }
+    /*
+     * Metoda slouží k automatickému vymazání složky
+     */
+    public function removeDir($fileUrl){
+        if(file_exists($fileUrl)){
+            rmdir("$fileUrl");
+        }
+    }
+    public function removeFile($fileUrl){
+        if(file_exists($fileUrl)){
+            unlink("$fileUrl");
+        }
+    }
+}
